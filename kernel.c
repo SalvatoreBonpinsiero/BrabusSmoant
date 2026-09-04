@@ -2,10 +2,10 @@ typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 
-#define VGA_WIDTH 80
-#define VGA_HEIGHT 25
+#define SCREEN_W 320
+#define SCREEN_H 200
 
-volatile uint16_t* vga_buffer = (volatile uint16_t*)0xB8000;
+volatile uint8_t* vga_mem = (volatile uint8_t*)0xA0000;
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
@@ -17,72 +17,147 @@ static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
-static inline uint16_t vga_entry(char ch, uint8_t color) {
-    return (uint16_t)(uint8_t)ch | ((uint16_t)color << 8);
-}
-
 void delay(volatile uint32_t count) {
     while (count--) {
         __asm__ volatile ("nop");
     }
 }
 
-void sound_on(uint32_t freq) {
-    uint32_t div = 1193180 / freq;
-    outb(0x43, 0xB6);
-    outb(0x42, (uint8_t)(div & 0xFF));
-    outb(0x42, (uint8_t)((div >> 8) & 0xFF));
-    uint8_t tmp = inb(0x61);
-    if (tmp != (tmp | 3)) {
-        outb(0x61, tmp | 3);
+void set_palette_color(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
+    outb(0x3C8, index);
+    outb(0x3C9, r >> 2);
+    outb(0x3C9, g >> 2);
+    outb(0x3C9, b >> 2);
+}
+
+void init_vga_mode13h(void) {
+    outb(0x3C2, 0x63);
+    outb(0x3D4, 0x11);
+    outb(0x3D5, inb(0x3D5) & 0x7F);
+
+    uint8_t crtc_regs[] = {
+        0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F,
+        0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x9C, 0x8E, 0x8F, 0x28, 0x40, 0x96, 0xB9, 0xA3,
+        0xFF
+    };
+    for (uint8_t i = 0; i < 25; i++) {
+        outb(0x3D4, i);
+        outb(0x3D5, crtc_regs[i]);
+    }
+
+    set_palette_color(16, 45, 10, 50);
+    set_palette_color(17, 30, 8, 35);
+    set_palette_color(18, 230, 80, 20);
+    set_palette_color(19, 25, 25, 25);
+    set_palette_color(20, 38, 38, 38);
+    set_palette_color(21, 230, 230, 230);
+    set_palette_color(22, 140, 140, 140);
+    set_palette_color(23, 235, 60, 60);
+    set_palette_color(24, 60, 190, 80);
+    set_palette_color(25, 240, 180, 30);
+    set_palette_color(26, 40, 140, 220);
+}
+
+void put_pixel(int x, int y, uint8_t color) {
+    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H) {
+        vga_mem[y * SCREEN_W + x] = color;
     }
 }
 
-void sound_off(void) {
-    uint8_t tmp = inb(0x61) & 0xFC;
-    outb(0x61, tmp);
-}
-
-void clear_screen(uint8_t color) {
-    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
-        vga_buffer[i] = vga_entry(' ', color);
-    }
-}
-
-void draw_char(int x, int y, char ch, uint8_t color) {
-    if (x >= 0 && x < VGA_WIDTH && y >= 0 && y < VGA_HEIGHT) {
-        vga_buffer[y * VGA_WIDTH + x] = vga_entry(ch, color);
-    }
-}
-
-void draw_text(int x, int y, const char* str, uint8_t color) {
-    int offset = y * VGA_WIDTH + x;
-    while (*str) {
-        vga_buffer[offset++] = vga_entry(*str++, color);
-    }
-}
-
-void draw_rect(int x, int y, int w, int h, uint8_t color) {
-    for (int i = y; i < y + h; i++) {
-        for (int j = x; j < x + w; j++) {
-            vga_buffer[i * VGA_WIDTH + j] = vga_entry(' ', color);
+void fill_rect(int x, int y, int w, int h, uint8_t color) {
+    for (int j = y; j < y + h; j++) {
+        if (j < 0 || j >= SCREEN_H) continue;
+        int row = j * SCREEN_W;
+        for (int i = x; i < x + w; i++) {
+            if (i >= 0 && i < SCREEN_W) {
+                vga_mem[row + i] = color;
+            }
         }
     }
 }
 
-void draw_double_box(int x, int y, int w, int h, uint8_t color) {
-    draw_char(x, y, (char)201, color);
-    draw_char(x + w - 1, y, (char)187, color);
-    draw_char(x, y + h - 1, (char)200, color);
-    draw_char(x + w - 1, y + h - 1, (char)188, color);
+void draw_line_h(int x, int y, int w, uint8_t color) {
+    fill_rect(x, y, w, 1, color);
+}
 
-    for (int i = x + 1; i < x + w - 1; i++) {
-        draw_char(i, y, (char)205, color);
-        draw_char(i, y + h - 1, (char)205, color);
+void draw_line_v(int x, int y, int h, uint8_t color) {
+    fill_rect(x, y, 1, h, color);
+}
+
+const uint8_t font_sub_5x7[41][5] = {
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // 3
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // 4
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // 5
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 6
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // 7
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // 9
+    {0x7C, 0x12, 0x11, 0x12, 0x7C}, // A
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // B
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // C
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // D
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // E
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // F
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // G
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // H
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // I
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // J
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // K
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // L
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // M
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // N
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // O
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // P
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // Q
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // R
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // S
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // T
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // U
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // V
+    {0x7F, 0x20, 0x18, 0x20, 0x7F}, // W
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // X
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // Z
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // space (36)
+    {0x00, 0x66, 0x66, 0x00, 0x00}, // : (37)
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // . (38)
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // - (39)
+    {0x00, 0x00, 0x7F, 0x00, 0x00}  // | (40)
+};
+
+int char_index(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'Z') return 10 + (c - 'A');
+    if (c >= 'a' && c <= 'z') return 10 + (c - 'a');
+    if (c == ' ') return 36;
+    if (c == ':') return 37;
+    if (c == '.') return 38;
+    if (c == '-') return 39;
+    if (c == '|') return 40;
+    return 36;
+}
+
+void draw_glyph(int x, int y, char c, uint8_t color) {
+    int idx = char_index(c);
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = font_sub_5x7[idx][col];
+        for (int row = 0; row < 7; row++) {
+            if (line & (1 << row)) {
+                put_pixel(x + col, y + row, color);
+            }
+        }
     }
-    for (int j = y + 1; j < y + h - 1; j++) {
-        draw_char(x, j, (char)186, color);
-        draw_char(x + w - 1, j, (char)186, color);
+}
+
+void draw_string(int x, int y, const char* str, uint8_t color) {
+    while (*str) {
+        draw_glyph(x, y, *str, color);
+        x += 6;
+        str++;
     }
 }
 
@@ -105,156 +180,120 @@ void int_to_str(int val, char* buf) {
     buf[i] = '\0';
 }
 
-void draw_battery(int x, int y, int percent) {
-    draw_char(x, y, '[', 0x05);
-    int bars = (percent * 6) / 100;
-    for (int i = 0; i < 6; i++) {
-        if (i < bars) {
-            draw_char(x + 1 + i, y, (char)219, (percent > 20) ? 0x0A : 0x0C);
-        } else {
-            draw_char(x + 1 + i, y, (char)176, 0x08);
-        }
-    }
-    draw_char(x + 7, y, ']', 0x05);
-    draw_char(x + 8, y, (char)243, 0x0A);
-}
+void show_plymouth_screen(void) {
+    fill_rect(0, 0, SCREEN_W, SCREEN_H, 17);
 
-void show_boot_animation(void) {
-    clear_screen(0x00);
+    draw_string(118, 70, "BRABUS OS", 18);
+    draw_string(106, 85, "UBUNTU EDITION", 21);
+    draw_string(94, 98, "PASITO 3 CONTROLLER", 22);
 
-    for (int step = 0; step < 4; step++) {
-        uint8_t clr = (step % 2 == 0) ? 0x05 : 0x0D;
-        draw_text(22, 5, " ____  ____    _    ____  _   _ ____  ", clr);
-        draw_text(22, 6, "| __ )|  _ \\  / \\  | __ )| | | / ___| ", clr);
-        draw_text(22, 7, "|  _ \\| |_) |/ _ \\ |  _ \\| | | \\___ \\ ", 0x0F);
-        draw_text(22, 8, "| |_) |  _ </ ___ \\| |_) | |_| |___) |", 0x0D);
-        draw_text(22, 9, "|____/|_| \\_/_/   \\_\\____/ \\___/|____/ ", 0x05);
-        delay(4000000);
-    }
-
-    draw_text(29, 11, "-= PASITO III SPORT OS =-", 0x5F);
-    draw_double_box(20, 14, 40, 3, 0x05);
-
-    const char* tasks[] = {
-        "INIT SYSTEM BUS...",
-        "POLLING I2C OLED DISPLAY...",
-        "CALIBRATING SHUNT RESISTOR...",
-        "MOUNTING SPI FLASH STORAGE...",
-        "READY TO VAPE!"
-    };
-
-    for (int p = 0; p <= 36; p++) {
-        draw_char(22 + p, 15, (char)219, 0x0D);
-
-        int task_id = (p * 5) / 37;
-        draw_rect(21, 18, 38, 1, 0x00);
-        draw_text(22, 18, tasks[task_id], 0x0B);
-
+    for (int step = 0; step <= 100; step += 4) {
+        fill_rect(80, 132, 160, 6, 19);
+        fill_rect(80, 132, (step * 160) / 100, 6, 18);
         delay(1200000);
     }
-    delay(5000000);
+    delay(2500000);
 }
 
-void render_dashboard(int watts, int is_firing, int puff_ticks, int puffs_count, int mode_idx) {
-    clear_screen(0x05);
+void draw_window(int wx, int wy, int ww, int wh, const char* title) {
+    fill_rect(wx + 2, wy + 2, ww, wh, 17);
+    fill_rect(wx, wy, ww, wh, 20);
 
-    draw_rect(12, 0, 56, 25, 0x00);
-    draw_double_box(12, 0, 56, 25, 0x05);
+    fill_rect(wx, wy, ww, 18, 19);
+    draw_line_h(wx, wy + 18, ww, 22);
 
-    draw_text(15, 1, "[B]", 0x5E);
-    draw_text(19, 1, "BRABUS ANT-GEN3", 0x0F);
-    draw_char(43, 1, (char)13, 0x0E);
-    draw_battery(45, 1, 95);
-    draw_text(55, 1, "95%", 0x0A);
-    draw_text(60, 1, "[LOCKED]", 0x08);
+    fill_rect(wx + 6, wy + 5, 8, 8, 23);
+    fill_rect(wx + 18, wy + 5, 8, 8, 25);
+    fill_rect(wx + 30, wy + 5, 8, 8, 24);
 
-    for (int i = 13; i < 67; i++) {
-        draw_char(i, 2, (char)205, 0x05);
+    draw_string(wx + 45, wy + 6, title, 21);
+}
+
+void render_gui(int watts, int is_firing, int puff_ticks, int puffs_count) {
+    for (int y = 0; y < SCREEN_H; y++) {
+        uint8_t c = (y > 100) ? 17 : 16;
+        draw_line_h(0, y, SCREEN_W, c);
     }
 
-    draw_double_box(14, 4, 30, 8, 0x0D);
-    draw_text(16, 4, "[ POWER SPEEDO ]", 0x0F);
+    fill_rect(0, 0, SCREEN_W, 14, 19);
+    draw_string(8, 4, "ACTIVITIES", 21);
+    draw_string(122, 4, "BRABUS OS", 18);
+    draw_string(262, 4, "98- BAT", 24);
 
+    fill_rect(0, 14, 24, SCREEN_H - 14, 19);
+    draw_line_v(24, 14, SCREEN_H - 14, 20);
+
+    fill_rect(4, 22, 16, 16, 18);
+    draw_string(9, 27, "B", 21);
+
+    fill_rect(4, 46, 16, 16, 26);
+    draw_string(9, 51, "V", 21);
+
+    fill_rect(4, 70, 16, 16, 22);
+    draw_string(7, 75, "CFG", 19);
+
+    int wx = 36;
+    int wy = 24;
+    int ww = 270;
+    int wh = 164;
+    draw_window(wx, wy, ww, wh, "BRABUS PASITO CONTROL CENTER");
+
+    draw_string(wx + 12, wy + 26, "POWER OUTPUT", 21);
     char w_buf[8];
     int_to_str(watts, w_buf);
-    draw_text(17, 6, w_buf, 0x0E);
-    draw_text(23, 6, "WATTS", 0x0D);
+    draw_string(wx + 95, wy + 26, w_buf, 18);
+    draw_string(wx + 115, wy + 26, "WATTS", 18);
 
-    const char* modes[] = { "SPORT ", "ECO   ", "CUSTOM", "BYPASS" };
-    draw_text(17, 8, "MODE:", 0x07);
-    draw_text(23, 8, modes[mode_idx], 0x0B);
+    fill_rect(wx + 12, wy + 38, 240, 10, 19);
+    int p_fill = (watts * 236) / 80;
+    fill_rect(wx + 14, wy + 40, p_fill, 6, 18);
 
-    int scale_fill = (watts * 24) / 80;
-    for (int s = 0; s < 24; s++) {
-        char bar_sym = (s < scale_fill) ? (char)219 : (char)176;
-        uint8_t bar_clr = (s > 18) ? 0x0C : ((s > 10) ? 0x0E : 0x0A);
-        draw_char(16 + s, 10, bar_sym, bar_clr);
-    }
+    fill_rect(wx + 12, wy + 56, 114, 46, 19);
+    draw_string(wx + 16, wy + 60, "ATOMIZER STATS", 26);
+    draw_string(wx + 16, wy + 72, "COIL: 0.60 OHM", 21);
+    draw_string(wx + 16, wy + 82, "VOLT: 3.84 V", 22);
+    draw_string(wx + 16, wy + 92, "AMP : 6.40 A", 22);
 
-    draw_double_box(46, 4, 20, 8, 0x05);
-    draw_text(48, 4, "[ METRICS ]", 0x0F);
-
-    draw_char(48, 6, (char)234, 0x0B);
-    draw_text(50, 6, "0.60 OHM", 0x0F);
-
-    draw_char(48, 7, (char)244, 0x0E);
-    draw_text(50, 7, "4.15 VOLT", 0x07);
-
-    draw_char(48, 8, (char)227, 0x0C);
-    draw_text(50, 8, "7.20 AMP", 0x07);
-
-    draw_char(48, 9, (char)127, 0x0D);
-    draw_text(50, 9, "PUFF:", 0x07);
+    fill_rect(wx + 138, wy + 56, 114, 46, 19);
+    draw_string(wx + 142, wy + 60, "SYS DIAGNOSTICS", 25);
+    draw_string(wx + 142, wy + 72, "CHIP: ANT-GEN3", 21);
+    draw_string(wx + 142, wy + 82, "TEMP: 32.8 C", 24);
+    draw_string(wx + 142, wy + 92, "PUFF: ", 22);
     char p_buf[8];
     int_to_str(puffs_count, p_buf);
-    draw_text(56, 9, p_buf, 0x0E);
-
-    for (int i = 13; i < 67; i++) {
-        draw_char(i, 13, (char)196, 0x05);
-    }
+    draw_string(wx + 176, wy + 92, p_buf, 21);
 
     if (is_firing) {
-        draw_rect(14, 15, 52, 6, 0x40);
-        draw_double_box(14, 15, 52, 6, 0x4E);
+        fill_rect(wx + 12, wy + 110, 240, 44, 23);
+        draw_string(wx + 75, wy + 116, ">>> FIRING COIL <<<", 21);
 
-        draw_char(22, 16, (char)15, 0x4E);
-        draw_text(24, 16, ">>> S P O R T   F I R I N G <<<", 0x4F);
-        draw_char(55, 16, (char)15, 0x4E);
-
-        draw_text(18, 18, "TIMER:", 0x4F);
+        draw_string(wx + 55, wy + 128, "TIME: ", 21);
         char sec_buf[8];
         int_to_str(puff_ticks / 20, sec_buf);
-        draw_text(25, 18, sec_buf, 0x4E);
-        draw_text(27, 18, "S / 10.0S", 0x4F);
+        draw_string(wx + 90, wy + 128, sec_buf, 25);
+        draw_string(wx + 105, wy + 128, "SEC / 10.0S MAX", 21);
 
-        int cutoff_progress = (puff_ticks * 46) / 200;
-        for (int b = 0; b < 46; b++) {
-            draw_char(17 + b, 19, (b < cutoff_progress) ? (char)219 : (char)177, 0x4C);
-        }
+        fill_rect(wx + 20, wy + 140, 224, 6, 19);
+        int cutoff_bar = (puff_ticks * 220) / 200;
+        fill_rect(wx + 22, wy + 142, cutoff_bar, 2, 25);
     } else {
-        draw_rect(14, 15, 52, 6, 0x00);
-        draw_double_box(14, 15, 52, 6, 0x08);
-
-        draw_text(28, 17, "[ COIL STATUS: READY ]", 0x0A);
-        draw_text(22, 19, "SMOANT SMART ANT PROTECTION ACTIVE", 0x05);
+        fill_rect(wx + 12, wy + 110, 240, 44, 19);
+        draw_string(wx + 75, wy + 120, "STATUS: STANDBY", 24);
+        draw_string(wx + 26, wy + 136, "SPACE: FIRE | UP/DOWN: ADJUST WATTS", 22);
     }
-
-    draw_rect(13, 22, 54, 2, 0x05);
-    draw_text(14, 22, "SPACE: VAPE | ^/v: WATTS | TAB: MODE", 0x5F);
-    draw_text(14, 23, "CUTOFF: 10 SEC | TEMP CHIP: 31.4 C", 0x5D);
 }
 
 void kernel_main(void) {
-    show_boot_animation();
+    init_vga_mode13h();
+    show_plymouth_screen();
 
     int watts = 35;
     int is_firing = 0;
     int puff_ticks = 0;
     int puffs_count = 0;
     int space_held = 0;
-    int mode_idx = 0;
 
-    render_dashboard(watts, is_firing, puff_ticks, puffs_count, mode_idx);
+    render_gui(watts, is_firing, puff_ticks, puffs_count);
 
     while (1) {
         if (inb(0x64) & 0x01) {
@@ -266,19 +305,15 @@ void kernel_main(void) {
                     is_firing = 1;
                     puff_ticks = 0;
                     puffs_count++;
-                    sound_on(180);
                 }
             } else if (scancode == 0xB9) {
                 space_held = 0;
                 is_firing = 0;
                 puff_ticks = 0;
-                sound_off();
             } else if (scancode == 0x48 && !is_firing) {
                 if (watts < 80) watts++;
             } else if (scancode == 0x50 && !is_firing) {
                 if (watts > 5) watts--;
-            } else if (scancode == 0x0F && !is_firing) {
-                mode_idx = (mode_idx + 1) % 4;
             }
         }
 
@@ -286,11 +321,10 @@ void kernel_main(void) {
             puff_ticks++;
             if (puff_ticks > 200) {
                 is_firing = 0;
-                sound_off();
             }
         }
 
-        render_dashboard(watts, is_firing, puff_ticks, puffs_count, mode_idx);
-        for (volatile int d = 0; d < 30000; d++);
+        render_gui(watts, is_firing, puff_ticks, puffs_count);
+        for (volatile int d = 0; d < 28000; d++);
     }
 }
