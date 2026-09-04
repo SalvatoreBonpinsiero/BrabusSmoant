@@ -2,10 +2,65 @@ typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 
-#define SCREEN_W 320
-#define SCREEN_H 200
+struct multiboot_info {
+    uint32_t flags;
+    uint32_t mem_lower;
+    uint32_t mem_upper;
+    uint32_t boot_device;
+    uint32_t cmdline;
+    uint32_t mods_count;
+    uint32_t mods_addr;
+    uint32_t syms[4];
+    uint32_t mmap_length;
+    uint32_t mmap_addr;
+    uint32_t drives_length;
+    uint32_t drives_addr;
+    uint32_t config_table;
+    uint32_t boot_loader_name;
+    uint32_t apm_table;
+    uint32_t vbe_control_info;
+    uint32_t vbe_mode_info;
+    uint16_t vbe_mode;
+    uint16_t vbe_interface_seg;
+    uint16_t vbe_interface_off;
+    uint16_t vbe_interface_len;
+    uint64_t framebuffer_addr;
+    uint32_t framebuffer_pitch;
+    uint32_t framebuffer_width;
+    uint32_t framebuffer_height;
+    uint8_t  framebuffer_bpp;
+    uint8_t  framebuffer_type;
+} __attribute__((packed));
 
-volatile uint8_t* vga_mem = (volatile uint8_t*)0xA0000;
+static uint32_t* fb = 0;
+static uint32_t fb_pitch = 0;
+static uint32_t fb_w = 1024;
+static uint32_t fb_h = 768;
+
+#define PASITO_W 80
+#define PASITO_H 160
+#define SCALE    3
+
+#define DISP_W (PASITO_W * SCALE)
+#define DISP_H (PASITO_H * SCALE)
+#define DISP_X ((1024 - DISP_W) / 2)
+#define DISP_Y ((768 - DISP_H) / 2)
+
+#define C_BODY_METAL   0xFF2B2B2B
+#define C_BODY_EDGE    0xFF404040
+#define C_CARBON       0xFF1A1A1A
+#define C_SCREEN_BEZEL 0xFF0D0D0D
+
+#define C_UBUNTU_BG    0xFF300A24
+#define C_UBUNTU_BAR   0xFF1E0616
+#define C_ORANGE       0xFFE95420
+#define C_WHITE        0xFFFFFFFF
+#define C_GRAY         0xFFAAAAAA
+#define C_DARK_GRAY    0xFF555555
+#define C_GREEN        0xFF38B44A
+#define C_RED          0xFFDF382C
+#define C_YELLOW       0xFFF6D32D
+#define C_CYAN         0xFF19B6EE
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
@@ -13,76 +68,30 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-void delay(volatile uint32_t count) {
-    while (count--) {
-        __asm__ volatile ("nop");
-    }
-}
-
-void set_palette_color(uint8_t index, uint8_t r, uint8_t g, uint8_t b) {
-    outb(0x3C8, index);
-    outb(0x3C9, r >> 2);
-    outb(0x3C9, g >> 2);
-    outb(0x3C9, b >> 2);
-}
-
-void init_vga_mode13h(void) {
-    outb(0x3C2, 0x63);
-    outb(0x3D4, 0x11);
-    outb(0x3D5, inb(0x3D5) & 0x7F);
-
-    uint8_t crtc_regs[] = {
-        0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F,
-        0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x9C, 0x8E, 0x8F, 0x28, 0x40, 0x96, 0xB9, 0xA3,
-        0xFF
-    };
-    for (uint8_t i = 0; i < 25; i++) {
-        outb(0x3D4, i);
-        outb(0x3D5, crtc_regs[i]);
-    }
-
-    set_palette_color(16, 45, 10, 50);
-    set_palette_color(17, 30, 8, 35);
-    set_palette_color(18, 230, 80, 20);
-    set_palette_color(19, 25, 25, 25);
-    set_palette_color(20, 38, 38, 38);
-    set_palette_color(21, 230, 230, 230);
-    set_palette_color(22, 140, 140, 140);
-    set_palette_color(23, 235, 60, 60);
-    set_palette_color(24, 60, 190, 80);
-    set_palette_color(25, 240, 180, 30);
-    set_palette_color(26, 40, 140, 220);
-}
-
-void put_pixel(int x, int y, uint8_t color) {
-    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H) {
-        vga_mem[y * SCREEN_W + x] = color;
-    }
-}
-
-void fill_rect(int x, int y, int w, int h, uint8_t color) {
+void fill_rect(int x, int y, int w, int h, uint32_t color) {
     for (int j = y; j < y + h; j++) {
-        if (j < 0 || j >= SCREEN_H) continue;
-        int row = j * SCREEN_W;
+        if (j < 0 || j >= (int)fb_h) continue;
+        uint32_t* row = &fb[j * (fb_pitch / 4)];
         for (int i = x; i < x + w; i++) {
-            if (i >= 0 && i < SCREEN_W) {
-                vga_mem[row + i] = color;
+            if (i >= 0 && i < (int)fb_w) {
+                row[i] = color;
             }
         }
     }
 }
 
-void draw_line_h(int x, int y, int w, uint8_t color) {
-    fill_rect(x, y, w, 1, color);
+void p_pixel(int x, int y, uint32_t color) {
+    if (x >= 0 && x < PASITO_W && y >= 0 && y < PASITO_H) {
+        fill_rect(DISP_X + x * SCALE, DISP_Y + y * SCALE, SCALE, SCALE, color);
+    }
 }
 
-void draw_line_v(int x, int y, int h, uint8_t color) {
-    fill_rect(x, y, 1, h, color);
+void p_rect(int x, int y, int w, int h, uint32_t color) {
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            p_pixel(x + i, y + j, color);
+        }
+    }
 }
 
 const uint8_t font_sub_5x7[41][5] = {
@@ -122,11 +131,11 @@ const uint8_t font_sub_5x7[41][5] = {
     {0x63, 0x14, 0x08, 0x14, 0x63}, // X
     {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
     {0x61, 0x51, 0x49, 0x45, 0x43}, // Z
-    {0x00, 0x00, 0x00, 0x00, 0x00}, // space (36)
-    {0x00, 0x66, 0x66, 0x00, 0x00}, // : (37)
-    {0x00, 0x60, 0x60, 0x00, 0x00}, // . (38)
-    {0x08, 0x08, 0x08, 0x08, 0x08}, // - (39)
-    {0x00, 0x00, 0x7F, 0x00, 0x00}  // | (40)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // пробел
+    {0x00, 0x66, 0x66, 0x00, 0x00}, // :
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // .
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // -
+    {0x00, 0x00, 0x7F, 0x00, 0x00}  // |
 };
 
 int char_index(char c) {
@@ -141,22 +150,26 @@ int char_index(char c) {
     return 36;
 }
 
-void draw_glyph(int x, int y, char c, uint8_t color) {
+void p_char(int x, int y, char c, uint32_t color, int scale) {
     int idx = char_index(c);
     for (int col = 0; col < 5; col++) {
         uint8_t line = font_sub_5x7[idx][col];
         for (int row = 0; row < 7; row++) {
             if (line & (1 << row)) {
-                put_pixel(x + col, y + row, color);
+                for (int dy = 0; dy < scale; dy++) {
+                    for (int dx = 0; dx < scale; dx++) {
+                        p_pixel(x + col * scale + dx, y + row * scale + dy, color);
+                    }
+                }
             }
         }
     }
 }
 
-void draw_string(int x, int y, const char* str, uint8_t color) {
+void p_string(int x, int y, const char* str, uint32_t color, int scale) {
     while (*str) {
-        draw_glyph(x, y, *str, color);
-        x += 6;
+        p_char(x, y, *str, color, scale);
+        x += (5 + 1) * scale;
         str++;
     }
 }
@@ -180,112 +193,121 @@ void int_to_str(int val, char* buf) {
     buf[i] = '\0';
 }
 
-void show_plymouth_screen(void) {
-    fill_rect(0, 0, SCREEN_W, SCREEN_H, 17);
+void render_device_shell(void) {
+    // Темный фон стола вокруг мода
+    fill_rect(0, 0, fb_w, fb_h, 0xFF141414);
 
-    draw_string(118, 70, "BRABUS OS", 18);
-    draw_string(106, 85, "UBUNTU EDITION", 21);
-    draw_string(94, 98, "PASITO 3 CONTROLLER", 22);
+    // Корпус Pasito (металлическая рамка)
+    int body_x = DISP_X - 60;
+    int body_y = DISP_Y - 90;
+    int body_w = DISP_W + 120;
+    int body_h = DISP_H + 180;
 
-    for (int step = 0; step <= 100; step += 4) {
-        fill_rect(80, 132, 160, 6, 19);
-        fill_rect(80, 132, (step * 160) / 100, 6, 18);
-        delay(1200000);
-    }
-    delay(2500000);
+    fill_rect(body_x, body_y, body_w, body_h, C_BODY_METAL);
+    fill_rect(body_x + 4, body_y + 4, body_w - 8, body_h - 8, C_CARBON);
+    fill_rect(body_x + 14, body_y + 14, body_w - 28, body_h - 28, C_BODY_METAL);
+
+    // Физическая кнопка Fire над экраном
+    fill_rect(DISP_X + (DISP_W / 2) - 40, body_y + 25, 80, 40, C_BODY_EDGE);
+    fill_rect(DISP_X + (DISP_W / 2) - 36, body_y + 29, 72, 32, C_CARBON);
+
+    // Безель экрана 80x160
+    fill_rect(DISP_X - 8, DISP_Y - 8, DISP_W + 16, DISP_H + 16, C_SCREEN_BEZEL);
+
+    // Физические кнопки регулировки (+/-) под экраном
+    fill_rect(DISP_X + 20, DISP_Y + DISP_H + 25, 60, 24, C_BODY_EDGE);
+    fill_rect(DISP_X + DISP_W - 80, DISP_Y + DISP_H + 25, 60, 24, C_BODY_EDGE);
 }
 
-void draw_window(int wx, int wy, int ww, int wh, const char* title) {
-    fill_rect(wx + 2, wy + 2, ww, wh, 17);
-    fill_rect(wx, wy, ww, wh, 20);
-
-    fill_rect(wx, wy, ww, 18, 19);
-    draw_line_h(wx, wy + 18, ww, 22);
-
-    fill_rect(wx + 6, wy + 5, 8, 8, 23);
-    fill_rect(wx + 18, wy + 5, 8, 8, 25);
-    fill_rect(wx + 30, wy + 5, 8, 8, 24);
-
-    draw_string(wx + 45, wy + 6, title, 21);
-}
-
-void render_gui(int watts, int is_firing, int puff_ticks, int puffs_count) {
-    for (int y = 0; y < SCREEN_H; y++) {
-        uint8_t c = (y > 100) ? 17 : 16;
-        draw_line_h(0, y, SCREEN_W, c);
+void render_pasito_display(int watts, int is_firing, int puff_ticks, int puffs_count) {
+    // Заливка экрана фирменным градиентом Ubuntu
+    for (int y = 0; y < PASITO_H; y++) {
+        uint32_t clr = (y < 80) ? C_UBUNTU_BG : 0xFF1E0616;
+        p_rect(0, y, PASITO_W, 1, clr);
     }
 
-    fill_rect(0, 0, SCREEN_W, 14, 19);
-    draw_string(8, 4, "ACTIVITIES", 21);
-    draw_string(122, 4, "BRABUS OS", 18);
-    draw_string(262, 4, "98- BAT", 24);
+    // 1. Верхний Top Bar Ubuntu (высота 14 px)
+    p_rect(0, 0, PASITO_W, 12, C_UBUNTU_BAR);
+    p_string(3, 3, "BRABUS", C_ORANGE, 1);
+    
+    // Иконка батареи с индикатором заряда
+    p_rect(58, 4, 16, 5, C_DARK_GRAY);
+    p_rect(59, 5, 12, 3, C_GREEN);
+    p_pixel(74, 5, C_DARK_GRAY);
 
-    fill_rect(0, 14, 24, SCREEN_H - 14, 19);
-    draw_line_v(24, 14, SCREEN_H - 14, 20);
-
-    fill_rect(4, 22, 16, 16, 18);
-    draw_string(9, 27, "B", 21);
-
-    fill_rect(4, 46, 16, 16, 26);
-    draw_string(9, 51, "V", 21);
-
-    fill_rect(4, 70, 16, 16, 22);
-    draw_string(7, 75, "CFG", 19);
-
-    int wx = 36;
-    int wy = 24;
-    int ww = 270;
-    int wh = 164;
-    draw_window(wx, wy, ww, wh, "BRABUS PASITO CONTROL CENTER");
-
-    draw_string(wx + 12, wy + 26, "POWER OUTPUT", 21);
-    char w_buf[8];
-    int_to_str(watts, w_buf);
-    draw_string(wx + 95, wy + 26, w_buf, 18);
-    draw_string(wx + 115, wy + 26, "WATTS", 18);
-
-    fill_rect(wx + 12, wy + 38, 240, 10, 19);
-    int p_fill = (watts * 236) / 80;
-    fill_rect(wx + 14, wy + 40, p_fill, 6, 18);
-
-    fill_rect(wx + 12, wy + 56, 114, 46, 19);
-    draw_string(wx + 16, wy + 60, "ATOMIZER STATS", 26);
-    draw_string(wx + 16, wy + 72, "COIL: 0.60 OHM", 21);
-    draw_string(wx + 16, wy + 82, "VOLT: 3.84 V", 22);
-    draw_string(wx + 16, wy + 92, "AMP : 6.40 A", 22);
-
-    fill_rect(wx + 138, wy + 56, 114, 46, 19);
-    draw_string(wx + 142, wy + 60, "SYS DIAGNOSTICS", 25);
-    draw_string(wx + 142, wy + 72, "CHIP: ANT-GEN3", 21);
-    draw_string(wx + 142, wy + 82, "TEMP: 32.8 C", 24);
-    draw_string(wx + 142, wy + 92, "PUFF: ", 22);
-    char p_buf[8];
-    int_to_str(puffs_count, p_buf);
-    draw_string(wx + 176, wy + 92, p_buf, 21);
+    p_rect(0, 12, PASITO_W, 1, C_ORANGE);
 
     if (is_firing) {
-        fill_rect(wx + 12, wy + 110, 240, 44, 23);
-        draw_string(wx + 75, wy + 116, ">>> FIRING COIL <<<", 21);
+        // Полноэкранный режим затяжки
+        p_rect(4, 18, 72, 136, C_RED);
+        p_rect(6, 20, 68, 132, 0xFF600B0B);
 
-        draw_string(wx + 55, wy + 128, "TIME: ", 21);
-        char sec_buf[8];
-        int_to_str(puff_ticks / 20, sec_buf);
-        draw_string(wx + 90, wy + 128, sec_buf, 25);
-        draw_string(wx + 105, wy + 128, "SEC / 10.0S MAX", 21);
+        p_string(14, 30, "VAPING", C_WHITE, 2);
+        p_string(16, 50, "ACTIVE", C_ORANGE, 2);
 
-        fill_rect(wx + 20, wy + 140, 224, 6, 19);
-        int cutoff_bar = (puff_ticks * 220) / 200;
-        fill_rect(wx + 22, wy + 142, cutoff_bar, 2, 25);
+        char s_buf[8];
+        int_to_str(puff_ticks / 20, s_buf);
+        p_string(28, 80, s_buf, C_YELLOW, 3);
+        p_string(48, 92, "S", C_WHITE, 1);
+
+        p_string(12, 115, "MAX 10.0S", C_GRAY, 1);
+
+        // Индикатор прогресса затяжки
+        p_rect(8, 135, 64, 8, C_SCREEN_BEZEL);
+        int bar_w = (puff_ticks * 60) / 200;
+        p_rect(10, 137, bar_w, 4, C_YELLOW);
+
     } else {
-        fill_rect(wx + 12, wy + 110, 240, 44, 19);
-        draw_string(wx + 75, wy + 120, "STATUS: STANDBY", 24);
-        draw_string(wx + 26, wy + 136, "SPACE: FIRE | UP/DOWN: ADJUST WATTS", 22);
+        // Обычный рабочий экран (Standby)
+        p_string(6, 18, "MODE: SPORT", C_CYAN, 1);
+
+        // Крупный вывод установленной мощности
+        char w_buf[8];
+        int_to_str(watts, w_buf);
+        int w_x = (watts < 10) ? 22 : 12;
+        p_string(w_x, 30, w_buf, C_WHITE, 4);
+        p_string(54, 48, "W", C_ORANGE, 2);
+
+        // Графический бар мощности (от 5 до 80W)
+        p_rect(4, 66, 72, 5, C_SCREEN_BEZEL);
+        int p_bar = (watts * 68) / 80;
+        p_rect(6, 67, p_bar, 3, C_ORANGE);
+
+        // Карточка параметров атомайзера
+        p_rect(4, 76, 72, 44, 0x881E0616);
+        p_rect(4, 76, 72, 1, C_DARK_GRAY);
+
+        p_string(8, 81, "RES : 0.60 O", C_WHITE, 1);
+        p_string(8, 93, "VOLT: 3.84 V", C_GRAY, 1);
+        p_string(8, 105, "AMP : 6.40 A", C_GRAY, 1);
+
+        // Блок статистики и статуса платы
+        p_rect(4, 124, 72, 30, 0x881E0616);
+        p_rect(4, 124, 72, 1, C_DARK_GRAY);
+
+        p_string(8, 128, "PUFF: ", C_GRAY, 1);
+        char p_buf[8];
+        int_to_str(puffs_count, p_buf);
+        p_string(38, 128, p_buf, C_YELLOW, 1);
+
+        p_string(8, 140, "STATUS: READY", C_GREEN, 1);
     }
 }
 
-void kernel_main(void) {
-    init_vga_mode13h();
-    show_plymouth_screen();
+void kernel_main(struct multiboot_info* mbi) {
+    if (mbi && (mbi->flags & (1 << 12)) && mbi->framebuffer_addr) {
+        fb = (uint32_t*)((uint32_t)mbi->framebuffer_addr);
+        fb_pitch = mbi->framebuffer_pitch;
+        fb_w = mbi->framebuffer_width;
+        fb_h = mbi->framebuffer_height;
+    } else {
+        fb = (uint32_t*)0xE0000000;
+        fb_pitch = 1024 * 4;
+        fb_w = 1024;
+        fb_h = 768;
+    }
+
+    render_device_shell();
 
     int watts = 35;
     int is_firing = 0;
@@ -293,7 +315,7 @@ void kernel_main(void) {
     int puffs_count = 0;
     int space_held = 0;
 
-    render_gui(watts, is_firing, puff_ticks, puffs_count);
+    render_pasito_display(watts, is_firing, puff_ticks, puffs_count);
 
     while (1) {
         if (inb(0x64) & 0x01) {
@@ -324,7 +346,7 @@ void kernel_main(void) {
             }
         }
 
-        render_gui(watts, is_firing, puff_ticks, puffs_count);
-        for (volatile int d = 0; d < 28000; d++);
+        render_pasito_display(watts, is_firing, puff_ticks, puffs_count);
+        for (volatile int d = 0; d < 30000; d++);
     }
 }
