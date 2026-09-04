@@ -1,6 +1,7 @@
-typedef unsigned char  uint8_t;
-typedef unsigned short uint16_t;
-typedef unsigned int   uint32_t;
+typedef unsigned char      uint8_t;
+typedef unsigned short     uint16_t;
+typedef unsigned int       uint32_t;
+typedef unsigned long long uint64_t;
 
 struct multiboot_info {
     uint32_t flags;
@@ -194,10 +195,8 @@ void int_to_str(int val, char* buf) {
 }
 
 void render_device_shell(void) {
-    // Темный фон стола вокруг мода
     fill_rect(0, 0, fb_w, fb_h, 0xFF141414);
 
-    // Корпус Pasito (металлическая рамка)
     int body_x = DISP_X - 60;
     int body_y = DISP_Y - 90;
     int body_w = DISP_W + 120;
@@ -207,30 +206,24 @@ void render_device_shell(void) {
     fill_rect(body_x + 4, body_y + 4, body_w - 8, body_h - 8, C_CARBON);
     fill_rect(body_x + 14, body_y + 14, body_w - 28, body_h - 28, C_BODY_METAL);
 
-    // Физическая кнопка Fire над экраном
     fill_rect(DISP_X + (DISP_W / 2) - 40, body_y + 25, 80, 40, C_BODY_EDGE);
     fill_rect(DISP_X + (DISP_W / 2) - 36, body_y + 29, 72, 32, C_CARBON);
 
-    // Безель экрана 80x160
     fill_rect(DISP_X - 8, DISP_Y - 8, DISP_W + 16, DISP_H + 16, C_SCREEN_BEZEL);
 
-    // Физические кнопки регулировки (+/-) под экраном
     fill_rect(DISP_X + 20, DISP_Y + DISP_H + 25, 60, 24, C_BODY_EDGE);
     fill_rect(DISP_X + DISP_W - 80, DISP_Y + DISP_H + 25, 60, 24, C_BODY_EDGE);
 }
 
 void render_pasito_display(int watts, int is_firing, int puff_ticks, int puffs_count) {
-    // Заливка экрана фирменным градиентом Ubuntu
     for (int y = 0; y < PASITO_H; y++) {
         uint32_t clr = (y < 80) ? C_UBUNTU_BG : 0xFF1E0616;
         p_rect(0, y, PASITO_W, 1, clr);
     }
 
-    // 1. Верхний Top Bar Ubuntu (высота 14 px)
     p_rect(0, 0, PASITO_W, 12, C_UBUNTU_BAR);
     p_string(3, 3, "BRABUS", C_ORANGE, 1);
     
-    // Иконка батареи с индикатором заряда
     p_rect(58, 4, 16, 5, C_DARK_GRAY);
     p_rect(59, 5, 12, 3, C_GREEN);
     p_pixel(74, 5, C_DARK_GRAY);
@@ -238,7 +231,6 @@ void render_pasito_display(int watts, int is_firing, int puff_ticks, int puffs_c
     p_rect(0, 12, PASITO_W, 1, C_ORANGE);
 
     if (is_firing) {
-        // Полноэкранный режим затяжки
         p_rect(4, 18, 72, 136, C_RED);
         p_rect(6, 20, 68, 132, 0xFF600B0B);
 
@@ -252,28 +244,22 @@ void render_pasito_display(int watts, int is_firing, int puff_ticks, int puffs_c
 
         p_string(12, 115, "MAX 10.0S", C_GRAY, 1);
 
-        // Индикатор прогресса затяжки
         p_rect(8, 135, 64, 8, C_SCREEN_BEZEL);
         int bar_w = (puff_ticks * 60) / 200;
         p_rect(10, 137, bar_w, 4, C_YELLOW);
-
     } else {
-        // Обычный рабочий экран (Standby)
         p_string(6, 18, "MODE: SPORT", C_CYAN, 1);
 
-        // Крупный вывод установленной мощности
         char w_buf[8];
         int_to_str(watts, w_buf);
         int w_x = (watts < 10) ? 22 : 12;
         p_string(w_x, 30, w_buf, C_WHITE, 4);
         p_string(54, 48, "W", C_ORANGE, 2);
 
-        // Графический бар мощности (от 5 до 80W)
         p_rect(4, 66, 72, 5, C_SCREEN_BEZEL);
         int p_bar = (watts * 68) / 80;
         p_rect(6, 67, p_bar, 3, C_ORANGE);
 
-        // Карточка параметров атомайзера
         p_rect(4, 76, 72, 44, 0x881E0616);
         p_rect(4, 76, 72, 1, C_DARK_GRAY);
 
@@ -281,7 +267,6 @@ void render_pasito_display(int watts, int is_firing, int puff_ticks, int puffs_c
         p_string(8, 93, "VOLT: 3.84 V", C_GRAY, 1);
         p_string(8, 105, "AMP : 6.40 A", C_GRAY, 1);
 
-        // Блок статистики и статуса платы
         p_rect(4, 124, 72, 30, 0x881E0616);
         p_rect(4, 124, 72, 1, C_DARK_GRAY);
 
