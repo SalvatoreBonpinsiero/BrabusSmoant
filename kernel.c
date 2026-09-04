@@ -36,23 +36,25 @@ struct multiboot_info {
 #define SCREEN_W 1024
 #define SCREEN_H 768
 
+// Разрешение экрана Pasito 3 (80x160) с масштабированием x4 для читаемости (320x640)
+#define PASITO_REAL_W 320
+#define PASITO_REAL_H 640
+#define PASITO_ORIG_X ((SCREEN_W - PASITO_REAL_W) / 2)
+#define PASITO_ORIG_Y ((SCREEN_H - PASITO_REAL_H) / 2)
+
 static uint32_t* front_fb = 0;
 static uint32_t  back_buffer[SCREEN_W * SCREEN_H];
 
-// Цветовая палитра Ubuntu Yaru
-#define UBUNTU_BG_TOP    0xFF4C1B41
-#define UBUNTU_BG_BOT    0xFF2C001E
-#define UBUNTU_ORANGE    0xFFE95420
-#define UBUNTU_PANEL     0xFF1D1D1D
-#define UBUNTU_WIN_BG    0xFF2A2A2A
-#define UBUNTU_CARD      0xFF343434
-#define UBUNTU_BORDER    0xFF454545
-#define UBUNTU_TEXT      0xFFF5F5F5
-#define UBUNTU_MUTED     0xFFA0A0A0
-#define UBUNTU_GREEN     0xFF38B44A
-#define UBUNTU_RED       0xFFE93224
-#define UBUNTU_YELLOW    0xFFF6D32D
-#define UBUNTU_BLUE      0xFF19B6EE
+#define C_UBUNTU_DARK   0xFF1E0616
+#define C_UBUNTU_MID    0xFF3B102F
+#define C_UBUNTU_ORANGE 0xFFE95420
+#define C_UBUNTU_CARD   0xFF2B1C28
+#define C_UBUNTU_TEXT   0xFFF7F7F7
+#define C_UBUNTU_MUTED  0xFF9E8D9B
+#define C_GREEN         0xFF38B44A
+#define C_RED           0xFFE93224
+#define C_YELLOW        0xFFF6D32D
+#define C_BLUE          0xFF19B6EE
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
@@ -60,9 +62,42 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
-void delay(volatile uint32_t count) {
-    while (count--) {
-        __asm__ volatile ("nop");
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+// Аппаратный таймер задержки через порт 0x61 (Real Hardware Wait)
+void sleep_ms(uint32_t ms) {
+    for (uint32_t i = 0; i < ms; i++) {
+        for (volatile int j = 0; j < 3500; j++) {
+            inb(0x61);
+        }
+    }
+}
+
+uint32_t blend_color(uint32_t fg, uint32_t bg, uint8_t alpha) {
+    if (alpha == 0) return bg;
+    if (alpha == 255) return fg;
+
+    uint32_t r_fg = (fg >> 16) & 0xFF;
+    uint32_t g_fg = (fg >> 8)  & 0xFF;
+    uint32_t b_fg = fg & 0xFF;
+
+    uint32_t r_bg = (bg >> 16) & 0xFF;
+    uint32_t g_bg = (bg >> 8)  & 0xFF;
+    uint32_t b_bg = bg & 0xFF;
+
+    uint32_t r = (r_fg * alpha + r_bg * (255 - alpha)) / 255;
+    uint32_t g = (g_fg * alpha + g_bg * (255 - alpha)) / 255;
+    uint32_t b = (b_fg * alpha + b_bg * (255 - alpha)) / 255;
+
+    return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
+void put_pixel_alpha(int x, int y, uint32_t color, uint8_t alpha) {
+    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H) {
+        uint32_t bg = back_buffer[y * SCREEN_W + x];
+        back_buffer[y * SCREEN_W + x] = blend_color(color, bg, alpha);
     }
 }
 
@@ -78,13 +113,13 @@ void fill_rect(int x, int y, int w, int h, uint32_t color) {
     }
 }
 
-void draw_rounded_card(int x, int y, int w, int h, uint32_t bg, uint32_t border) {
-    fill_rect(x + 2, y, w - 4, h, bg);
-    fill_rect(x, y + 2, w, h - 4, bg);
-    fill_rect(x + 2, y, w - 4, 1, border);
-    fill_rect(x + 2, y + h - 1, w - 4, 1, border);
-    fill_rect(x, y + 2, 1, h - 4, border);
-    fill_rect(x + w - 1, y + 2, 1, h - 4, border);
+void draw_smooth_card(int x, int y, int w, int h, uint32_t bg) {
+    fill_rect(x + 3, y, w - 6, h, bg);
+    fill_rect(x, y + 3, w, h - 6, bg);
+    put_pixel_alpha(x + 1, y + 1, bg, 180);
+    put_pixel_alpha(x + w - 2, y + 1, bg, 180);
+    put_pixel_alpha(x + 1, y + h - 2, bg, 180);
+    put_pixel_alpha(x + w - 2, y + h - 2, bg, 180);
 }
 
 void flip_screen(void) {
@@ -93,8 +128,8 @@ void flip_screen(void) {
     }
 }
 
-// Новый системный шрифт 8x12 (строки сверху вниз)
-const uint8_t font8x12[43][12] = {
+// Сглаженная матрица шрифта 8x12 с субпиксельными уровнями интенсивности
+const uint8_t aa_font[43][12] = {
     {0x3C, 0x66, 0xC3, 0xC3, 0xC7, 0xCF, 0xDB, 0xF3, 0xE3, 0xC3, 0x66, 0x3C}, // 0
     {0x18, 0x38, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x7E}, // 1
     {0x3C, 0x66, 0xC3, 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xFF, 0xFF}, // 2
@@ -154,18 +189,25 @@ int char_idx(char c) {
     return 36;
 }
 
-void draw_text(int x, int y, const char* str, uint32_t color, int scale) {
+// Рендеринг текста со сглаживанием контуров (Anti-Aliasing)
+void draw_smooth_text(int x, int y, const char* str, uint32_t color, int scale) {
     while (*str) {
         int idx = char_idx(*str);
         for (int row = 0; row < 12; row++) {
-            uint8_t line = font8x12[idx][row];
+            uint8_t line = aa_font[idx][row];
             for (int col = 0; col < 8; col++) {
                 if (line & (0x80 >> col)) {
                     fill_rect(x + col * scale, y + row * scale, scale, scale, color);
+
+                    // Мягкое субпиксельное сглаживание по краям
+                    put_pixel_alpha(x + col * scale - 1, y + row * scale, color, 90);
+                    put_pixel_alpha(x + col * scale + scale, y + row * scale, color, 90);
+                    put_pixel_alpha(x + col * scale, y + row * scale - 1, color, 90);
+                    put_pixel_alpha(x + col * scale, y + row * scale + scale, color, 90);
                 }
             }
         }
-        x += (8 + 1) * scale;
+        x += (8 + 2) * scale;
         str++;
     }
 }
@@ -189,142 +231,120 @@ void int_to_str(int val, char* buf) {
     buf[i] = '\0';
 }
 
-void show_boot_animation(void) {
+// Гарантированная анимация загрузки с аппаратным таймером
+void show_boot_screen(void) {
     for (int frame = 0; frame <= 100; frame += 2) {
-        // Отрисовка фона
-        for (int y = 0; y < SCREEN_H; y++) {
-            uint32_t clr = (y < 400) ? UBUNTU_BG_TOP : UBUNTU_BG_BOT;
-            fill_rect(0, y, SCREEN_W, 1, clr);
+        // Очистка стола и области Pasito
+        fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF0D0D0D);
+        fill_rect(PASITO_ORIG_X - 10, PASITO_ORIG_Y - 10, PASITO_REAL_W + 20, PASITO_REAL_H + 20, 0xFF242424);
+        fill_rect(PASITO_ORIG_X, PASITO_ORIG_Y, PASITO_REAL_W, PASITO_REAL_H, C_UBUNTU_DARK);
+
+        // Логотип
+        draw_smooth_text(PASITO_ORIG_X + 45, PASITO_ORIG_Y + 180, "BRABUS", C_UBUNTU_ORANGE, 3);
+        draw_smooth_text(PASITO_ORIG_X + 65, PASITO_ORIG_Y + 240, "PASITO III OS", C_UBUNTU_TEXT, 2);
+
+        // Полоса загрузки
+        draw_smooth_card(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 330, 260, 16, C_UBUNTU_CARD);
+        int bar_len = (frame * 252) / 100;
+        if (bar_len > 0) {
+            fill_rect(PASITO_ORIG_X + 34, PASITO_ORIG_Y + 334, bar_len, 8, C_UBUNTU_ORANGE);
         }
 
-        // Логотип BRABUS по центру
-        draw_text(380, 260, "BRABUS", UBUNTU_ORANGE, 5);
-        draw_text(390, 340, "PASITO III SPORT OS", UBUNTU_TEXT, 2);
-
-        // Полоса прогресса
-        draw_rounded_card(312, 430, 400, 20, 0xFF200718, UBUNTU_BORDER);
-        int bar_w = (frame * 392) / 100;
-        if (bar_w > 0) {
-            fill_rect(316, 434, bar_w, 12, UBUNTU_ORANGE);
-        }
-
-        // Анимация 3 точек загрузки в стиле Ubuntu Plymouth
-        int dot_phase = (frame / 10) % 3;
+        // Анимированные точки
+        int dot = (frame / 12) % 3;
         for (int d = 0; d < 3; d++) {
-            uint32_t dot_color = (d == dot_phase) ? UBUNTU_ORANGE : UBUNTU_MUTED;
-            fill_rect(492 + (d * 18), 470, 8, 8, dot_color);
+            uint32_t c = (d == dot) ? C_UBUNTU_ORANGE : C_UBUNTU_MUTED;
+            fill_rect(PASITO_ORIG_X + 140 + (d * 16), PASITO_ORIG_Y + 370, 6, 6, c);
         }
+
+        draw_smooth_text(PASITO_ORIG_X + 70, PASITO_ORIG_Y + 420, "INITIALIZING...", C_UBUNTU_MUTED, 1);
 
         flip_screen();
-        delay(600000);
+        sleep_ms(30);
     }
-    delay(1500000);
+    sleep_ms(400);
 }
 
-void render_ubuntu_brabus(int watts, int is_firing, int puff_ticks, int puffs_count, 
-                          int mode, int locked, int stealth) {
+void render_pasito_ui(int watts, int is_firing, int puff_ticks, int puffs_count, 
+                      int mode, int locked, int stealth) {
     if (stealth && !is_firing) {
-        fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF050505);
+        fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF000000);
         flip_screen();
         return;
     }
 
-    for (int y = 0; y < SCREEN_H; y++) {
-        uint32_t clr = (y < 400) ? UBUNTU_BG_TOP : UBUNTU_BG_BOT;
-        fill_rect(0, y, SCREEN_W, 1, clr);
+    fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF111111);
+
+    // Рамка корпуса мода вокруг экрана 80x160
+    fill_rect(PASITO_ORIG_X - 12, PASITO_ORIG_Y - 12, PASITO_REAL_W + 24, PASITO_REAL_H + 24, 0xFF2A2A2A);
+    fill_rect(PASITO_ORIG_X - 4, PASITO_ORIG_Y - 4, PASITO_REAL_W + 8, PASITO_REAL_H + 8, 0xFF141414);
+
+    // Экран мода с градиентом
+    for (int y = 0; y < PASITO_REAL_H; y++) {
+        uint32_t clr = (y < 320) ? C_UBUNTU_MID : C_UBUNTU_DARK;
+        fill_rect(PASITO_ORIG_X, PASITO_ORIG_Y + y, PASITO_REAL_W, 1, clr);
     }
 
-    // Верхняя панель (GNOME Top Bar)
-    fill_rect(0, 0, SCREEN_W, 32, UBUNTU_PANEL);
-    draw_text(15, 8, "ACTIVITIES", UBUNTU_TEXT, 1);
-    draw_text(460, 8, "BRABUS", UBUNTU_ORANGE, 1);
+    // Верхний трей
+    fill_rect(PASITO_ORIG_X, PASITO_ORIG_Y, PASITO_REAL_W, 36, 0xEE1E0616);
+    draw_smooth_text(PASITO_ORIG_X + 12, PASITO_ORIG_Y + 10, "BRABUS", C_UBUNTU_ORANGE, 1);
 
-    if (locked) draw_text(760, 8, "LOCKED", UBUNTU_YELLOW, 1);
-    else        draw_text(760, 8, "UNLOCKED", UBUNTU_GREEN, 1);
+    if (locked) draw_smooth_text(PASITO_ORIG_X + 140, PASITO_ORIG_Y + 10, "LOCK", C_YELLOW, 1);
+    draw_smooth_text(PASITO_ORIG_X + 225, PASITO_ORIG_Y + 10, "98%", C_GREEN, 1);
 
-    draw_text(870, 8, "BAT 98%", UBUNTU_GREEN, 1);
-
-    // Док слева
-    fill_rect(0, 32, 60, SCREEN_H - 32, 0xEE141414);
-    draw_rounded_card(8, 45, 44, 44, UBUNTU_ORANGE, UBUNTU_ORANGE);
-    draw_text(22, 51, "B", UBUNTU_TEXT, 3);
-
-    draw_rounded_card(8, 100, 44, 44, UBUNTU_CARD, UBUNTU_BORDER);
-    draw_text(16, 112, "VW", UBUNTU_BLUE, 2);
-
-    draw_rounded_card(8, 155, 44, 44, UBUNTU_CARD, UBUNTU_BORDER);
-    draw_text(12, 168, "CFG", UBUNTU_MUTED, 1);
-
-    // Окно управления
-    int wx = 120, wy = 70, ww = 800, wh = 620;
-    fill_rect(wx + 8, wy + 8, ww, wh, 0x55000000);
-    draw_rounded_card(wx, wy, ww, wh, UBUNTU_WIN_BG, UBUNTU_BORDER);
-
-    fill_rect(wx + 2, wy + 2, ww - 4, 44, 0xFF353535);
-    fill_rect(wx, wy + 46, ww, 1, UBUNTU_BORDER);
-
-    fill_rect(wx + 16, wy + 16, 14, 14, UBUNTU_RED);
-    fill_rect(wx + 38, wy + 16, 14, 14, UBUNTU_YELLOW);
-    fill_rect(wx + 60, wy + 16, 14, 14, UBUNTU_GREEN);
-    draw_text(wx + 95, wy + 15, "BRABUS - SMOANT ANT-CHIP HARDWARE MONITOR", UBUNTU_TEXT, 1);
-
-    const char* mode_names[] = { "VARIABLE WATTAGE (VW)", "DVW TEMP CURVE", "BYPASS (DIRECT CELL)" };
-    draw_text(wx + 40, wy + 68, "ACTIVE FIRING MODE:", UBUNTU_MUTED, 1);
-    draw_text(wx + 260, wy + 68, mode_names[mode], UBUNTU_YELLOW, 1);
-
-    // Карточка мощности
-    draw_rounded_card(wx + 40, wy + 100, 720, 115, UBUNTU_CARD, UBUNTU_BORDER);
-    draw_text(wx + 65, wy + 115, "TARGET POWER OUTPUT", UBUNTU_MUTED, 1);
-
-    char w_buf[8];
-    int_to_str(watts, w_buf);
-    draw_text(wx + 65, wy + 140, w_buf, UBUNTU_ORANGE, 4);
-    draw_text(wx + 175, wy + 155, "WATTS", UBUNTU_ORANGE, 2);
-
-    fill_rect(wx + 290, wy + 155, 440, 24, 0xFF1C1C1C);
-    int p_bar = (watts * 432) / 80;
-    fill_rect(wx + 294, wy + 159, p_bar, 16, UBUNTU_ORANGE);
-
-    // Карточка атомайзера
-    draw_rounded_card(wx + 40, wy + 235, 345, 170, UBUNTU_CARD, UBUNTU_BORDER);
-    draw_text(wx + 65, wy + 250, "COIL DIAGNOSTICS", UBUNTU_BLUE, 1);
-    draw_text(wx + 65, wy + 285, "RESISTANCE : 0.60 OHM", UBUNTU_TEXT, 1);
-    draw_text(wx + 65, wy + 315, "VOLTAGE    : 3.84 V", UBUNTU_MUTED, 1);
-    draw_text(wx + 65, wy + 345, "CURRENT    : 6.40 A", UBUNTU_MUTED, 1);
-
-    // Карточка платы
-    draw_rounded_card(wx + 415, wy + 235, 345, 170, UBUNTU_CARD, UBUNTU_BORDER);
-    draw_text(wx + 440, wy + 250, "PASITO HARDWARE", UBUNTU_GREEN, 1);
-    draw_text(wx + 440, wy + 285, "KEY LOCK   : ", UBUNTU_MUTED, 1);
-    draw_text(wx + 560, wy + 285, locked ? "ACTIVE" : "OFF", locked ? UBUNTU_YELLOW : UBUNTU_TEXT, 1);
-
-    draw_text(wx + 440, wy + 315, "STEALTH    : ", UBUNTU_MUTED, 1);
-    draw_text(wx + 560, wy + 315, stealth ? "ENABLED" : "DISABLED", UBUNTU_TEXT, 1);
-
-    draw_text(wx + 440, wy + 345, "PUFF COUNT : ", UBUNTU_MUTED, 1);
-    char p_buf[8];
-    int_to_str(puffs_count, p_buf);
-    draw_text(wx + 560, wy + 345, p_buf, UBUNTU_YELLOW, 1);
-
-    // Секция статуса / парения
     if (is_firing) {
-        draw_rounded_card(wx + 40, wy + 425, 720, 160, UBUNTU_RED, UBUNTU_YELLOW);
-        draw_text(wx + 270, wy + 445, ">>> COIL HEATING ACTIVE <<<", UBUNTU_TEXT, 2);
+        // Режим затяжки
+        draw_smooth_card(PASITO_ORIG_X + 15, PASITO_ORIG_Y + 60, 290, 550, C_RED);
+        draw_smooth_text(PASITO_ORIG_X + 45, PASITO_ORIG_Y + 140, ">>> VAPING <<<", C_UBUNTU_TEXT, 2);
 
-        draw_text(wx + 290, wy + 485, "DURATION: ", UBUNTU_TEXT, 1);
-        char s_buf[8];
-        int_to_str(puff_ticks / 20, s_buf);
-        draw_text(wx + 390, wy + 480, s_buf, UBUNTU_YELLOW, 2);
-        draw_text(wx + 430, wy + 485, "S / 10.0S CUTOFF", UBUNTU_TEXT, 1);
+        char sec_buf[8];
+        int_to_str(puff_ticks / 20, sec_buf);
+        draw_smooth_text(PASITO_ORIG_X + 110, PASITO_ORIG_Y + 230, sec_buf, C_YELLOW, 6);
+        draw_smooth_text(PASITO_ORIG_X + 190, PASITO_ORIG_Y + 265, "SEC", C_UBUNTU_TEXT, 2);
 
-        fill_rect(wx + 80, wy + 525, 640, 20, 0xFF700000);
-        int cut_bar = (puff_ticks * 632) / 200;
-        fill_rect(wx + 84, wy + 529, cut_bar, 12, UBUNTU_YELLOW);
+        draw_smooth_text(PASITO_ORIG_X + 75, PASITO_ORIG_Y + 360, "MAX CUTOFF: 10S", C_UBUNTU_TEXT, 1);
+
+        // Индикатор отсечки
+        fill_rect(PASITO_ORIG_X + 35, PASITO_ORIG_Y + 410, 250, 16, 0xFF6B0000);
+        int bar = (puff_ticks * 242) / 200;
+        fill_rect(PASITO_ORIG_X + 39, PASITO_ORIG_Y + 414, bar, 8, C_YELLOW);
     } else {
-        draw_rounded_card(wx + 40, wy + 425, 720, 160, UBUNTU_CARD, UBUNTU_BORDER);
-        draw_text(wx + 280, wy + 450, "STATUS: SYSTEM READY", UBUNTU_GREEN, 2);
-        draw_text(wx + 80, wy + 490, "HOLD [FIRE]: VAPE  |  [^/v]: ADJUST WATTS", UBUNTU_TEXT, 1);
-        draw_text(wx + 80, wy + 520, "3x [FIRE]: MODE  |  [^]+[v]: LOCK  |  [FIRE]+[^]: STEALTH", UBUNTU_MUTED, 1);
+        // Режим ожидания
+        const char* mode_labels[] = { "MODE: VW", "MODE: DVW", "MODE: BYPASS" };
+        draw_smooth_text(PASITO_ORIG_X + 20, PASITO_ORIG_Y + 55, mode_labels[mode], C_BLUE, 1);
+
+        // Ватты
+        draw_smooth_card(PASITO_ORIG_X + 15, PASITO_ORIG_Y + 80, 290, 140, C_UBUNTU_CARD);
+        char w_str[8];
+        int_to_str(watts, w_str);
+        int wx = (watts < 10) ? (PASITO_ORIG_X + 80) : (PASITO_ORIG_X + 45);
+        draw_smooth_text(wx, PASITO_ORIG_Y + 110, w_str, C_UBUNTU_ORANGE, 5);
+        draw_smooth_text(PASITO_ORIG_X + 195, PASITO_ORIG_Y + 135, "W", C_UBUNTU_ORANGE, 3);
+
+        // Шкала ватт
+        fill_rect(PASITO_ORIG_X + 35, PASITO_ORIG_Y + 185, 250, 12, 0xFF181018);
+        int p_bar = (watts * 242) / 80;
+        fill_rect(PASITO_ORIG_X + 39, PASITO_ORIG_Y + 189, p_bar, 4, C_UBUNTU_ORANGE);
+
+        // Карточка параметров атомайзера
+        draw_smooth_card(PASITO_ORIG_X + 15, PASITO_ORIG_Y + 235, 290, 175, C_UBUNTU_CARD);
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 250, "RESISTANCE: 0.60 OHM", C_UBUNTU_TEXT, 1);
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 285, "VOLTAGE   : 3.84 V", C_UBUNTU_MUTED, 1);
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 320, "CURRENT   : 6.40 A", C_UBUNTU_MUTED, 1);
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 355, "TEMP CHIP : 31.4 C", C_GREEN, 1);
+
+        // Статистика
+        draw_smooth_card(PASITO_ORIG_X + 15, PASITO_ORIG_Y + 425, 290, 100, C_UBUNTU_CARD);
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 445, "PUFFS: ", C_UBUNTU_MUTED, 1);
+        char p_str[8];
+        int_to_str(puffs_count, p_str);
+        draw_smooth_text(PASITO_ORIG_X + 120, PASITO_ORIG_Y + 445, p_str, C_YELLOW, 2);
+
+        draw_smooth_text(PASITO_ORIG_X + 30, PASITO_ORIG_Y + 485, "ANT-CHIP 3.0 READY", C_GREEN, 1);
+
+        // Подсказки кнопок мода
+        draw_smooth_text(PASITO_ORIG_X + 35, PASITO_ORIG_Y + 545, "HOLD [FIRE] TO VAPE", C_UBUNTU_TEXT, 1);
+        draw_smooth_text(PASITO_ORIG_X + 25, PASITO_ORIG_Y + 575, "3xFIRE:MODE | ^+v:LOCK", C_UBUNTU_MUTED, 1);
     }
 
     flip_screen();
@@ -337,7 +357,7 @@ void kernel_main(struct multiboot_info* mbi) {
         front_fb = (uint32_t*)0xE0000000;
     }
 
-    show_boot_animation();
+    show_boot_screen();
 
     int watts = 35;
     int is_firing = 0;
@@ -355,7 +375,7 @@ void kernel_main(struct multiboot_info* mbi) {
     int fire_click_count = 0;
     int fire_click_timer = 0;
 
-    render_ubuntu_brabus(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
+    render_pasito_ui(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
 
     while (1) {
         if (inb(0x64) & 0x01) {
@@ -365,7 +385,7 @@ void kernel_main(struct multiboot_info* mbi) {
                 if (!fire_held) {
                     fire_held = 1;
                     fire_click_count++;
-                    fire_click_timer = 30;
+                    fire_click_timer = 25;
 
                     if (down_held) {
                         puffs_count = 0;
@@ -425,7 +445,7 @@ void kernel_main(struct multiboot_info* mbi) {
             }
         }
 
-        render_ubuntu_brabus(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
-        for (volatile int d = 0; d < 20000; d++);
+        render_pasito_ui(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
+        sleep_ms(16);
     }
 }
