@@ -39,29 +39,25 @@ struct multiboot_info {
 static uint32_t* front_fb = 0;
 static uint32_t  back_buffer[SCREEN_W * SCREEN_H];
 
-// Цветовая палитра монохромного ЖК-экрана Nokia 8110
-#define C_DESK_BG      0xFF121212
-#define C_CASE_PLASTIC 0xFF263238
-#define C_CASE_SHADOW  0xFF1B2428
-#define C_LCD_BG       0xFF8DA378
-#define C_LCD_PIXEL    0xFF1D2619
-#define C_LCD_GRID     0xFF849970
-
-#define LCD_X 332
-#define LCD_Y 120
-#define LCD_W 360
-#define LCD_H 500
+// Цветовая палитра Ubuntu Yaru
+#define UBUNTU_BG_TOP    0xFF4C1B41
+#define UBUNTU_BG_BOT    0xFF2C001E
+#define UBUNTU_ORANGE    0xFFE95420
+#define UBUNTU_PANEL     0xFF1D1D1D
+#define UBUNTU_WIN_BG    0xFF2A2A2A
+#define UBUNTU_CARD      0xFF343434
+#define UBUNTU_BORDER    0xFF454545
+#define UBUNTU_TEXT      0xFFF5F5F5
+#define UBUNTU_MUTED     0xFFA0A0A0
+#define UBUNTU_GREEN     0xFF38B44A
+#define UBUNTU_RED       0xFFE93224
+#define UBUNTU_YELLOW    0xFFF6D32D
+#define UBUNTU_BLUE      0xFF19B6EE
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
     __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
-}
-
-void draw_pixel(int x, int y, uint32_t color) {
-    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H) {
-        back_buffer[y * SCREEN_W + x] = color;
-    }
 }
 
 void fill_rect(int x, int y, int w, int h, uint32_t color) {
@@ -76,11 +72,16 @@ void fill_rect(int x, int y, int w, int h, uint32_t color) {
     }
 }
 
-void lcd_pixel(int x, int y, uint32_t color, int size) {
-    fill_rect(LCD_X + x * size, LCD_Y + y * size, size, size, color);
+void draw_rounded_card(int x, int y, int w, int h, uint32_t bg, uint32_t border) {
+    fill_rect(x + 1, y, w - 2, h, bg);
+    fill_rect(x, y + 1, w, h - 2, bg);
+    fill_rect(x + 1, y, w - 2, 1, border);
+    fill_rect(x + 1, y + h - 1, w - 2, 1, border);
+    fill_rect(x, y + 1, 1, h - 2, border);
+    fill_rect(x + w - 1, y + 1, 1, h - 2, border);
 }
 
-const uint8_t font5x7[42][5] = {
+const uint8_t font5x7[43][5] = {
     {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
     {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
     {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
@@ -122,10 +123,11 @@ const uint8_t font5x7[42][5] = {
     {0x00, 0x60, 0x60, 0x00, 0x00}, // .
     {0x08, 0x08, 0x08, 0x08, 0x08}, // -
     {0x00, 0x00, 0x7F, 0x00, 0x00}, // |
-    {0x3E, 0x41, 0x5D, 0x55, 0x5E}  // Ohm
+    {0x00, 0x41, 0x3E, 0x00, 0x00}, // (
+    {0x00, 0x3E, 0x41, 0x00, 0x00}  // )
 };
 
-int get_char_idx(char c) {
+int char_idx(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'Z') return 10 + (c - 'A');
     if (c >= 'a' && c <= 'z') return 10 + (c - 'a');
@@ -134,23 +136,23 @@ int get_char_idx(char c) {
     if (c == '.') return 38;
     if (c == '-') return 39;
     if (c == '|') return 40;
-    if (c == '@') return 41;
+    if (c == '(') return 41;
+    if (c == ')') return 42;
     return 36;
 }
 
-void draw_lcd_text(int x, int y, const char* str, int scale) {
-    int cur_x = x;
+void draw_text(int x, int y, const char* str, uint32_t color, int scale) {
     while (*str) {
-        int idx = get_char_idx(*str);
+        int idx = char_idx(*str);
         for (int col = 0; col < 5; col++) {
-            uint8_t col_data = font5x7[idx][col];
+            uint8_t line = font5x7[idx][col];
             for (int row = 0; row < 7; row++) {
-                if (col_data & (1 << row)) {
-                    fill_rect(LCD_X + (cur_x + col * scale), LCD_Y + (y + row * scale), scale, scale, C_LCD_PIXEL);
+                if (line & (1 << row)) {
+                    fill_rect(x + col * scale, y + row * scale, scale, scale, color);
                 }
             }
         }
-        cur_x += 6 * scale;
+        x += (5 + 1) * scale;
         str++;
     }
 }
@@ -180,97 +182,105 @@ void flip_screen(void) {
     }
 }
 
-void render_frame(int watts, int is_firing, int puff_ticks, int puffs_count) {
-    fill_rect(0, 0, SCREEN_W, SCREEN_H, C_DESK_BG);
-
-    // Корпус Nokia 8110 со скруглениями
-    fill_rect(LCD_X - 44, LCD_Y - 80, LCD_W + 88, LCD_H + 160, C_CASE_SHADOW);
-    fill_rect(LCD_X - 40, LCD_Y - 76, LCD_W + 80, LCD_H + 152, C_CASE_PLASTIC);
-
-    // Динамик Nokia
-    fill_rect(LCD_X + (LCD_W / 2) - 40, LCD_Y - 45, 80, 8, C_DESK_BG);
-    draw_lcd_text((LCD_W / 2) - 48, -25, "NOKIA", 2);
-
-    // Внутренняя рамка и подсветка экрана
-    fill_rect(LCD_X - 6, LCD_Y - 6, LCD_W + 12, LCD_H + 12, C_CASE_SHADOW);
-    fill_rect(LCD_X, LCD_Y, LCD_W, LCD_H, C_LCD_BG);
-
-    // Сегментная сетка ЖК-матрицы
-    for (int j = 0; j < LCD_H; j += 4) {
-        fill_rect(LCD_X, LCD_Y + j, LCD_W, 1, C_LCD_GRID);
+void render_ubuntu_brabus(int watts, int is_firing, int puff_ticks, int puffs_count, 
+                          int mode, int locked, int stealth) {
+    if (stealth && !is_firing) {
+        fill_rect(0, 0, SCREEN_W, SCREEN_H, 0xFF050505);
+        flip_screen();
+        return;
     }
 
-    // 1. Статус-бар (Антенна слева, Батарея справа)
-    fill_rect(LCD_X + 15, LCD_Y + 15, 3, 15, C_LCD_PIXEL);
-    fill_rect(LCD_X + 21, LCD_Y + 20, 3, 10, C_LCD_PIXEL);
-    fill_rect(LCD_X + 27, LCD_Y + 24, 3, 6, C_LCD_PIXEL);
-    fill_rect(LCD_X + 33, LCD_Y + 27, 3, 3, C_LCD_PIXEL);
+    for (int y = 0; y < SCREEN_H; y++) {
+        uint32_t clr = (y < 400) ? UBUNTU_BG_TOP : UBUNTU_BG_BOT;
+        fill_rect(0, y, SCREEN_W, 1, clr);
+    }
 
-    draw_lcd_text(120, 16, "BRABUS", 3);
+    fill_rect(0, 0, SCREEN_W, 30, UBUNTU_PANEL);
+    draw_text(15, 8, "ACTIVITIES", UBUNTU_TEXT, 2);
+    draw_text(450, 8, "BRABUS", UBUNTU_ORANGE, 2);
 
-    fill_rect(LCD_X + LCD_W - 55, LCD_Y + 15, 36, 16, C_LCD_PIXEL);
-    fill_rect(LCD_X + LCD_W - 53, LCD_Y + 17, 32, 12, C_LCD_BG);
-    fill_rect(LCD_X + LCD_W - 50, LCD_Y + 19, 26, 8, C_LCD_PIXEL);
-    fill_rect(LCD_X + LCD_W - 19, LCD_Y + 20, 3, 6, C_LCD_PIXEL);
+    if (locked) draw_text(760, 8, "LOCKED", UBUNTU_YELLOW, 2);
+    else        draw_text(760, 8, "UNLOCKED", UBUNTU_GREEN, 2);
 
-    fill_rect(LCD_X + 10, LCD_Y + 42, LCD_W - 20, 2, C_LCD_PIXEL);
+    draw_text(880, 8, "BAT 98%", UBUNTU_GREEN, 2);
+
+    fill_rect(0, 30, 60, SCREEN_H - 30, 0xEE141414);
+    draw_rounded_card(8, 45, 44, 44, UBUNTU_ORANGE, UBUNTU_ORANGE);
+    draw_text(22, 53, "B", UBUNTU_TEXT, 4);
+
+    draw_rounded_card(8, 100, 44, 44, UBUNTU_CARD, UBUNTU_BORDER);
+    draw_text(20, 114, "VW", UBUNTU_BLUE, 2);
+
+    draw_rounded_card(8, 155, 44, 44, UBUNTU_CARD, UBUNTU_BORDER);
+    draw_text(17, 169, "CFG", UBUNTU_MUTED, 2);
+
+    int wx = 120, wy = 70, ww = 800, wh = 620;
+    fill_rect(wx + 8, wy + 8, ww, wh, 0x55000000);
+    draw_rounded_card(wx, wy, ww, wh, UBUNTU_WIN_BG, UBUNTU_BORDER);
+
+    fill_rect(wx + 1, wy + 1, ww - 2, 45, 0xFF353535);
+    fill_rect(wx, wy + 45, ww, 1, UBUNTU_BORDER);
+
+    fill_rect(wx + 16, wy + 16, 14, 14, UBUNTU_RED);
+    fill_rect(wx + 38, wy + 16, 14, 14, UBUNTU_YELLOW);
+    fill_rect(wx + 60, wy + 16, 14, 14, UBUNTU_GREEN);
+    draw_text(wx + 95, wy + 15, "BRABUS - SMOANT ANT-CHIP HARDWARE MONITOR", UBUNTU_TEXT, 2);
+
+    const char* mode_names[] = { "VARIABLE WATTAGE (VW)", "DVW TEMP CURVE", "BYPASS (DIRECT CELL)" };
+    draw_text(wx + 40, wy + 70, "ACTIVE FIRING MODE:", UBUNTU_MUTED, 2);
+    draw_text(wx + 260, wy + 70, mode_names[mode], UBUNTU_YELLOW, 2);
+
+    draw_rounded_card(wx + 40, wy + 105, 720, 110, UBUNTU_CARD, UBUNTU_BORDER);
+    draw_text(wx + 65, wy + 125, "TARGET POWER", UBUNTU_MUTED, 2);
+
+    char w_buf[8];
+    int_to_str(watts, w_buf);
+    draw_text(wx + 65, wy + 150, w_buf, UBUNTU_ORANGE, 5);
+    draw_text(wx + 165, wy + 165, "WATTS", UBUNTU_ORANGE, 3);
+
+    fill_rect(wx + 280, wy + 155, 450, 24, 0xFF1C1C1C);
+    int p_bar = (watts * 442) / 80;
+    fill_rect(wx + 284, wy + 159, p_bar, 16, UBUNTU_ORANGE);
+
+    draw_rounded_card(wx + 40, wy + 235, 345, 170, UBUNTU_CARD, UBUNTU_BORDER);
+    draw_text(wx + 65, wy + 255, "COIL DIAGNOSTICS", UBUNTU_BLUE, 2);
+    draw_text(wx + 65, wy + 290, "RESISTANCE : 0.60 OHM", UBUNTU_TEXT, 2);
+    draw_text(wx + 65, wy + 320, "VOLTAGE    : 3.84 V", UBUNTU_MUTED, 2);
+    draw_text(wx + 65, wy + 350, "CURRENT    : 6.40 A", UBUNTU_MUTED, 2);
+
+    draw_rounded_card(wx + 415, wy + 235, 345, 170, UBUNTU_CARD, UBUNTU_BORDER);
+    draw_text(wx + 440, wy + 255, "PASITO FEATURES", UBUNTU_GREEN, 2);
+    
+    draw_text(wx + 440, wy + 290, "KEY LOCK   : ", UBUNTU_MUTED, 2);
+    draw_text(wx + 570, wy + 290, locked ? "ACTIVE" : "OFF", locked ? UBUNTU_YELLOW : UBUNTU_TEXT, 2);
+
+    draw_text(wx + 440, wy + 320, "STEALTH    : ", UBUNTU_MUTED, 2);
+    draw_text(wx + 570, wy + 320, stealth ? "ENABLED" : "DISABLED", UBUNTU_TEXT, 2);
+
+    draw_text(wx + 440, wy + 350, "PUFF COUNT : ", UBUNTU_MUTED, 2);
+    char p_buf[8];
+    int_to_str(puffs_count, p_buf);
+    draw_text(wx + 570, wy + 350, p_buf, UBUNTU_YELLOW, 2);
 
     if (is_firing) {
-        fill_rect(LCD_X + 15, LCD_Y + 70, LCD_W - 30, 290, C_LCD_PIXEL);
-        fill_rect(LCD_X + 19, LCD_Y + 74, LCD_W - 38, 282, C_LCD_BG);
+        draw_rounded_card(wx + 40, wy + 425, 720, 160, UBUNTU_RED, UBUNTU_YELLOW);
+        draw_text(wx + 260, wy + 445, ">>> COIL HEATING ACTIVE <<<", UBUNTU_TEXT, 3);
 
-        draw_lcd_text(50, 110, "VAPING", 5);
+        draw_text(wx + 280, wy + 485, "DURATION: ", UBUNTU_TEXT, 2);
+        char s_buf[8];
+        int_to_str(puff_ticks / 20, s_buf);
+        draw_text(wx + 390, wy + 480, s_buf, UBUNTU_YELLOW, 3);
+        draw_text(wx + 430, wy + 485, "S / 10.0S CUTOFF", UBUNTU_TEXT, 2);
 
-        char sec_buf[8];
-        int_to_str(puff_ticks / 20, sec_buf);
-        draw_lcd_text(110, 190, sec_buf, 7);
-        draw_lcd_text(180, 215, "SEC", 3);
-
-        draw_lcd_text(70, 280, "LIMIT 10.0S", 3);
-
-        fill_rect(LCD_X + 35, LCD_Y + 310, LCD_W - 70, 20, C_LCD_PIXEL);
-        fill_rect(LCD_X + 37, LCD_Y + 312, LCD_W - 74, 16, C_LCD_BG);
-        int cut_fill = (puff_ticks * (LCD_W - 78)) / 200;
-        fill_rect(LCD_X + 39, LCD_Y + 314, cut_fill, 12, C_LCD_PIXEL);
-
+        fill_rect(wx + 80, wy + 525, 640, 20, 0xFF700000);
+        int cut_bar = (puff_ticks * 632) / 200;
+        fill_rect(wx + 84, wy + 529, cut_bar, 12, UBUNTU_YELLOW);
     } else {
-        draw_lcd_text(25, 65, "POWER SETTING", 2);
-
-        char w_str[8];
-        int_to_str(watts, w_str);
-        int w_x = (watts < 10) ? 90 : 50;
-        draw_lcd_text(w_x, 95, w_str, 8);
-        draw_lcd_text(205, 130, "WATTS", 3);
-
-        fill_rect(LCD_X + 20, LCD_Y + 180, LCD_W - 40, 18, C_LCD_PIXEL);
-        fill_rect(LCD_X + 22, LCD_Y + 182, LCD_W - 44, 14, C_LCD_BG);
-        int bar_w = (watts * (LCD_W - 48)) / 80;
-        fill_rect(LCD_X + 24, LCD_Y + 184, bar_w, 10, C_LCD_PIXEL);
-
-        fill_rect(LCD_X + 20, LCD_Y + 220, LCD_W - 40, 130, C_LCD_PIXEL);
-        fill_rect(LCD_X + 22, LCD_Y + 222, LCD_W - 44, 126, C_LCD_BG);
-
-        draw_lcd_text(35, 235, "COIL : 0.60 OHM", 2);
-        draw_lcd_text(35, 260, "VOLT : 3.84 V", 2);
-        draw_lcd_text(35, 285, "AMP  : 6.40 A", 2);
-
-        draw_lcd_text(35, 315, "PUFFS: ", 2);
-        char p_str[8];
-        int_to_str(puffs_count, p_str);
-        draw_lcd_text(125, 315, p_str, 2);
-
-        draw_lcd_text(40, 380, "PASITO 8110 BANANA", 2);
-        draw_lcd_text(35, 410, "SMOANT CHIP READY", 2);
+        draw_rounded_card(wx + 40, wy + 425, 720, 160, UBUNTU_CARD, UBUNTU_BORDER);
+        draw_text(wx + 280, wy + 450, "STATUS: SYSTEM READY", UBUNTU_GREEN, 2);
+        draw_text(wx + 80, wy + 490, "HOLD [FIRE]: VAPE  |  [^/v]: ADJUST WATTS", UBUNTU_TEXT, 2);
+        draw_text(wx + 80, wy + 520, "3x [FIRE]: MODE  |  [^]+[v]: LOCK  |  [FIRE]+[^]: STEALTH", UBUNTU_MUTED, 2);
     }
-
-    fill_rect(LCD_X + 10, LCD_Y + LCD_H - 45, LCD_W - 20, 2, C_LCD_PIXEL);
-    draw_lcd_text(25, LCD_H - 30, "Menu", 3);
-    draw_lcd_text(LCD_W - 95, LCD_H - 30, "Back", 3);
-
-    // Софт-кнопки слайдера Nokia
-    fill_rect(LCD_X + 20, LCD_Y + LCD_H + 20, 60, 16, C_DESK_BG);
-    fill_rect(LCD_X + LCD_W - 80, LCD_Y + LCD_H + 20, 60, 16, C_DESK_BG);
-    fill_rect(LCD_X + (LCD_W / 2) - 30, LCD_Y + LCD_H + 15, 60, 26, C_DESK_BG);
 
     flip_screen();
 }
@@ -286,32 +296,96 @@ void kernel_main(struct multiboot_info* mbi) {
     int is_firing = 0;
     int puff_ticks = 0;
     int puffs_count = 0;
-    int space_held = 0;
+    
+    int mode = 0;
+    int locked = 0;
+    int stealth = 0;
 
-    render_frame(watts, is_firing, puff_ticks, puffs_count);
+    int fire_held = 0;
+    int up_held = 0;
+    int down_held = 0;
+
+    int fire_click_count = 0;
+    int fire_click_timer = 0;
+
+    render_ubuntu_brabus(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
 
     while (1) {
         if (inb(0x64) & 0x01) {
             uint8_t scancode = inb(0x60);
 
+            // Кнопка FIRE (Пробел: 0x39 нажат, 0xB9 отпущен)
             if (scancode == 0x39) {
-                if (!space_held) {
-                    space_held = 1;
+                if (!fire_held) {
+                    fire_held = 1;
+                    fire_click_count++;
+                    fire_click_timer = 30; // окно для тройного клика
+
+                    // Комбинация: FIRE + DOWN = Сброс тяг (Puff Clear)
+                    if (down_held) {
+                        puffs_count = 0;
+                        fire_click_count = 0;
+                    }
+                    // Комбинация: FIRE + UP = Стелс-режим (Stealth)
+                    else if (up_held) {
+                        stealth = !stealth;
+                        fire_click_count = 0;
+                    }
+                }
+            } else if (scancode == 0xB9) {
+                fire_held = 0;
+                is_firing = 0;
+                puff_ticks = 0;
+            }
+
+            // Кнопка ВВЕРХ (Стрелка вверх: 0x48 нажата, 0xC8 отпущена)
+            else if (scancode == 0x48) {
+                up_held = 1;
+                // Комбинация: UP + DOWN = Блокировка (Key Lock)
+                if (down_held && !is_firing) {
+                    locked = !locked;
+                } else if (!locked && !is_firing) {
+                    if (watts < 80) watts++;
+                }
+            } else if (scancode == 0xC8) {
+                up_held = 0;
+            }
+
+            // Кнопка ВНИЗ (Стрелка вниз: 0x50 нажата, 0xD0 отпущена)
+            else if (scancode == 0x50) {
+                down_held = 1;
+                // Комбинация: UP + DOWN = Блокировка (Key Lock)
+                if (up_held && !is_firing) {
+                    locked = !locked;
+                } else if (!locked && !is_firing) {
+                    if (watts > 5) watts--;
+                }
+            } else if (scancode == 0xD0) {
+                down_held = 0;
+            }
+        }
+
+        // Логика тройного клика FIRE (3x Click -> Mode Switch)
+        if (fire_click_timer > 0) {
+            fire_click_timer--;
+            if (fire_click_count >= 3) {
+                mode = (mode + 1) % 3;
+                fire_click_count = 0;
+                fire_click_timer = 0;
+            }
+        } else {
+            // Если таймер истек и это был просто зажим FIRE -> запуск парения
+            if (fire_held && fire_click_count == 1 && !up_held && !down_held) {
+                if (!is_firing) {
                     is_firing = 1;
                     puff_ticks = 0;
                     puffs_count++;
                 }
-            } else if (scancode == 0xB9) {
-                space_held = 0;
-                is_firing = 0;
-                puff_ticks = 0;
-            } else if (scancode == 0x48 && !is_firing) {
-                if (watts < 80) watts++;
-            } else if (scancode == 0x50 && !is_firing) {
-                if (watts > 5) watts--;
             }
+            fire_click_count = 0;
         }
 
+        // Счётчик отсечки парения (10 секунд)
         if (is_firing) {
             puff_ticks++;
             if (puff_ticks > 200) {
@@ -319,8 +393,7 @@ void kernel_main(struct multiboot_info* mbi) {
             }
         }
 
-        render_frame(watts, is_firing, puff_ticks, puffs_count);
-
+        render_ubuntu_brabus(watts, is_firing, puff_ticks, puffs_count, mode, locked, stealth);
         for (volatile int d = 0; d < 20000; d++);
     }
 }
