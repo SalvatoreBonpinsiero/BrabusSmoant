@@ -19,7 +19,6 @@ extern kernel_main
 start:
     cli
     mov esp, stack_space
-    push ebx
     call kernel_main
     hlt
 
