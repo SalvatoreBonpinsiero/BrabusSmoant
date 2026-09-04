@@ -1,0 +1,41 @@
+name: Build Bootable ISO
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc gcc-multilib nasm xorriso mtools grub-pc-bin grub-common
+
+      - name: Compile kernel and bootloader
+        run: |
+          nasm -f elf32 boot.asm -o boot.o
+          gcc -m32 -c kernel.c -o kernel.o -std=gnu99 -ffreestanding -O2 -Wall -Wextra -fno-pie -fno-stack-protector
+          ld -m elf_i386 -T linker.ld -o kernel.bin boot.o kernel.o -nostdlib
+
+      - name: Create ISO image
+        run: |
+          mkdir -p iso_root/boot/grub
+          cp kernel.bin iso_root/boot/
+          cp grub.cfg iso_root/boot/grub/
+          grub-mkrescue -o brabus_pasito.iso iso_root
+
+      - name: Upload ISO Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brabus_pasito_iso
+          path: brabus_pasito.iso
+          if-no-files-found: error
